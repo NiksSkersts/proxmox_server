@@ -1,0 +1,227 @@
+---
+
+- name: Check if VM exists
+  community.general.proxmox_vm_info:
+    api_user: "{{ proxmox.api_user }}"
+    api_password: "{{ proxmox.api_password }}"
+    api_host: "{{ proxmox.api_host }}"
+    api_token_id: "{{ proxmox.token_id | default(omit) }}"
+    api_token_secret: "{{ proxmox.token_secret | default(omit) }}"
+    vmid: "{{ item.id }}"
+    node: "{{ ansible_hostname }}"
+    name: "{{ item.name }}"
+  register: "vm_status"
+
+- name: Download Template
+  vars:
+    # Select the file name without ext.
+    template_name: '{{ item.template | basename | regex_replace("^([^\.]*).*", "\1") }}'
+    template_ext: '{{ item.template | basename | regex_replace(".(\w+)$", "\1") }}'
+  block:
+
+    - name: "Download template"
+      when: item.template is url
+      retries: "{{ retry_count | default(5) }}"
+      ansible.builtin.get_url:
+        url: "{{ item.template }}"
+        dest: "{{ item.template_destination_path }}"
+        checksum: "{{ item.template_checksum }}"
+
+    - name: "Copy template"
+      when: item.template is file
+      retries: "{{ retry_count | default(5) }}"
+      ansible.builtin.copy:
+        src: "{{ item.template }}"
+        dest: "{{ item.template_destination_path }}"
+
+    - name: Deal with Archives
+      when: 'item.template | basename | regex_search("\.(zip|tar|xz|gz|bz2|7z)$")'
+      block:
+        
+        - name: "Ensure exists {{ item.template_destination_path }}/{{ template_name }}"
+          ansible.builtin.file:
+            path: "{{ item.template_destination_path }}/{{ template_name }}"
+            state: directory
+        
+        # Unarchive the downloaded file.
+        # Will overwrite any changes to the image in dest.
+        # TODO find less expensive way to do this
+        - name: "Unarchive the archive."
+          ansible.builtin.unarchive:
+            src: "{{ item.template_destination_path }}/{{item.template | basename}}"
+            dest: "{{ item.template_destination_path }}/{{ template_name }}"
+            remote_src: true
+            mode: '0644'
+            owner: root
+            group: root
+
+        - name: "Find the name of the template file"
+          ansible.builtin.find:
+            paths: "{{ item.template_destination_path }}/{{ template_name }}/"
+            recurse: true
+            file_type: file
+            use_regex: false
+            patterns:
+              - '*.qcow2'
+              - '*.raw'
+          register: found_files
+
+        - name: Set cloud_image_path
+          ansible.builtin.set_fact: 
+            cloud_image_path: "{{ found_files.files[0].path }}"
+
+    - name: Deal with QCOW2 and RAW files
+      when: 'item.template | basename | regex_search("\.(qcow2|raw)$")'
+      block:
+
+        - name: Set cloud_image_path
+          ansible.builtin.set_fact: 
+            cloud_image_path: '{{ item.template_destination_path }}/{{ item.template | basename }}'
+
+- name: Stop and remove {{ item.name }}
+  when: item.remove | default(false)
+  block:
+
+    - name: Stop
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        name: "{{ item.name }}"
+        vmid: "{{ item.id }}"
+        node: "{{ ansible_hostname }}"
+        state: stopped
+
+    - name: Remove
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        name: "{{ item.name }}"
+        vmid: "{{ item.id }}"
+        node: "{{ ansible_hostname }}"
+        state: absent
+
+  # Create a new VM only when vm_status returns empty array.
+  # This is not good because it will skip updating the VM ...
+- name: Create {{ item.name }}
+  # when: vm_status.proxmox_vms is defined and vm_status.proxmox_vms |length<1
+  block:
+
+    - name: Create
+      community.general.proxmox_kvm:
+        timeout: 1000
+        state: 'present'
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        node: "{{ ansible_hostname }}"
+        name: "{{ item.name }}"
+        vmid: "{{ item.id }}"
+        agent: "{{ item.agent }}"
+        onboot: "{{ item.onboot }}"
+        bios: "{{ item.bios }}"
+        cores: "{{ item.cpu_cores }}"
+        memory: "{{ item.vm_memory }}"
+        efidisk0: "{{ item.efidisk | default(omit) }}"
+        ide: "{{ item.cloudinit | default(omit) }}"
+        scsi: "{{ item.drives | default(omit) }}" 
+        machine: "{{ item.machine }}"
+        scsihw: "{{ item.scsihw }}"
+        tpmstate0: "{{ item.tmp }}"
+        ostype: "{{ item.ostype }}"
+        serial: "{{ item.serial }}"
+        vga: "{{ item.vga }}"
+
+    - name: Assign network interfaces to VM
+      community.general.proxmox_nic:
+        state: 'present'
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        name: "{{ item.name }}"
+        vmid: "{{ item.id }}"
+        interface: "net{{ inner_item.id | default('net0')}}"
+        bridge: "{{ inner_item.bridge | default('vmbr0') }}"
+        tag: "{{ inner_item.tag | default(0) }}"
+        mtu: "{{ inner_item.mtu | default(1) }}"
+      loop_control:
+        loop_var: inner_item
+      loop: "{{ item.netn }}"
+
+    - name: Add cloud-init config
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        node: "{{ ansible_hostname }}"
+        name: "{{ item.name }}"
+        vmid: "{{ item.id }}"
+        update: '{{ item.ci_update | default(omit) }}'
+        ciuser: '{{ item.ci_user | default(omit) }}'
+        cipassword: '{{ item.ci_pass | default(omit) }}' # HASH THE PASSWORD BEFOREHAND
+        searchdomains: "{{ ci_search_domain | default(omit) }}"
+        nameservers: "{{ item.ci_dns | default(omit)}}"
+        sshkeys: "{{ item.ci_ssh | default(omit) }}"
+        cicustom: "{{ item.ci_custom | default(omit) }}"
+
+    - name: Add cloud-init ipconfig
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        node: "{{ ansible_hostname }}"
+        name: "{{ item.name }}"
+        vmid: "{{ item.id }}"
+        update: true
+        ipconfig: '{"ipconfig{{ inner_item.id | default(0) }}":"ip={{ inner_item.ip }}/{{ inner_item.subnet }}{% if inner_item.gw is defined and inner_item.gw %},gw={{ inner_item.gw }}{%endif%}"}'
+      loop_control:
+        loop_var: inner_item
+      loop: "{{ item.netn }}"
+
+    # Wait for 10 seconds to make sure that VM is not in 'locked' state.
+    - name: Wait for VM create
+      ansible.builtin.wait_for:
+        timeout: 10
+
+    # Resize disk to "{{ vm_disk_size }}" size. This is not an add function.
+    # Required only for boot disks.
+    - name: Ensure disks resized
+      when: inner_item.id == 1
+      community.general.proxmox_disk:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        vmid: "{{ item.id }}"
+        disk: "{{ inner_item.disk_key }}"
+        size: "{{ inner_item.disk_size | default(vm.def_disk_size) }}"
+        state: 'resized'
+        timeout: 10
+      loop_control:
+        loop_var: inner_item
+      loop: "{{ item.diskn }}"
+
+    # Wait for the task to finish.
+    # I am not sure if this is even needed.
+    - name: "Wait for VM resize."
+      ansible.builtin.wait_for:
+        timeout: 10
+
+    # Start the virtual machine.
+    - name: "Start"
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        vmid: "{{ item.id }}"
+        state: started
+
+    # It will delay this task for 60 seconds and timeout after 180.
+    # This task will finish when port 22 becomes active.
+    # Delay is required to ensure that port 22 does not become active before cloud-init is ready.
+    - name: Wait for VM to start
+      ansible.builtin.wait_for:
+        host: "{{ item.ip }}"
+        port: 22
+        delay: 30
+        timeout: 180

@@ -1,0 +1,31 @@
+galaxy_info:
+
+  author: 'Niks Skersts <mail@nikssk.id.lv>, Niks Skersts <niksskersts@rix.tbmarine.group>'
+
+  company: 'nikssk.id.lv, SIA TBMarine Shipmanagement (Riga)'
+
+  description: Role for configuring Proxmox server
+
+  # issue_tracker_url: http://example.com/issue/tracker
+
+  license: MIT
+
+  min_ansible_version: 2.1
+
+  # min_ansible_container_version:
+  # platforms:
+  # - name: Fedora
+  #   versions:
+  #   - all
+  #   - 25
+  # - name: SomePlatform
+  #   versions:
+  #   - all
+  #   - 1.0
+  #   - 7
+  #   - 99.99
+
+  galaxy_tags:
+    - Proxmox
+
+dependencies: []

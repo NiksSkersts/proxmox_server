@@ -1,0 +1,82 @@
+---
+
+- name: Check if LXC exists
+  ignore_errors: true
+  community.general.proxmox:
+    api_user: "{{ proxmox.api_user }}"
+    api_password: "{{ proxmox.api_password }}"
+    api_host: "{{ proxmox.api_host }}"
+    api_token_id: "{{ proxmox.token_id | default(omit) }}"
+    api_token_secret: "{{ proxmox.token_secret | default(omit) }}"
+    vmid: "{{ hostvars[item].id }}"
+    node: "{{ ansible_hostname }}"
+    hostname: "{{ hostvars[item].name }}"
+  register: "vm_status"
+
+- name: Download Template
+  block:
+    # This will also ensure that the image does not get downloaded again for further VMs.
+    # Allows for checksum validation.
+    - name: "Download container image."
+      retries: 3
+      community.general.proxmox_template:
+        node: "{{ ansible_hostname }}"
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        storage: "{{ hostvars[item].template_storage }}"
+        content_type: vztmpl
+        template: "{{ hostvars[item].template }}"
+
+  # Create a new VM only when vm_status returns empty array.
+- name: Create LXC
+  block:
+
+    # TODO: Skip VM's if ID exists.
+    - name: 'Create container'
+      community.general.proxmox:
+        timeout: 1000
+        state: 'present'
+        description: "{{ hostvars[item].description | default(omit) }}"
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        node: "{{ ansible_hostname }}"
+        hostname: "{{ hostvars[item].name }}"
+        vmid: "{{ hostvars[item].id }}"
+        onboot: true
+        cores: "{{ hostvars[item].cpu_cores }}"
+        memory: "{{ hostvars[item].vm_memory }}"
+        swap: "{{ hostvars[item].vm_memory }}"
+        ostemplate: "local:vztmpl/{{ hostvars[item].template }}"
+        storage: "{{ hostvars[item].storage }}"
+        password: "{{ proxmox.api_password }}"
+        nameserver: "{{ hostvars[item].dns }}"
+        pubkey: "{{ ssh.pub }}"
+
+    - name: "Wait for VM create"
+      ansible.builtin.wait_for:
+        timeout: 10
+
+    - name: Add cloud-init ipconfig
+      community.general.proxmox:
+        update: true
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        node: "{{ ansible_hostname }}"
+        hostname: "{{ hostvars[item].name }}"
+        vmid: "{{ hostvars[item].id }}"
+        netif: '{"net{{ inner_item.id }}":"name=eth{{ inner_item.id }},bridge={{ inner_item.bridge }},firewall=0,ip={{ inner_item.ip }}/{{ inner_item.subnet }}{% if hostvars[item].1.gw is defined and hostvars[item].1.gw %},gw={{ inner_item.gw }}{%endif%}"}'
+      loop_control:
+        loop_var: inner_item
+      loop: "{{ hostvars[item].netn }}"
+
+    # Start the virtual machine.
+    - name: "Start VM."
+      community.general.proxmox:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        vmid: "{{ hostvars[item].id }}"
+        state: started

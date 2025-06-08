@@ -1,0 +1,27 @@
+---
+
+- name: List tokens
+  changed_when: false
+  register: token_status
+  ansible.builtin.command: pveum user token list {{ item.userid }} --output-format json
+
+- name: Create defined tokens
+  when: item.secret not in token_status.stdout
+  block:
+
+    - name: Create API
+      ansible.builtin.command: pveum user token add {{ item.userid }} {{ item.secret }} -privsep 1 --output-format json
+      register: api_task
+
+    - name: Write API key to dest
+      when: token_save_to_disk | default(false)
+      ansible.builtin.copy:
+        content: "{{ api_task }}"
+        dest: "{{ token_save_location | default('~/') }}/{{ item }}.txt"
+
+    - name: Modify API ACL
+      ansible.builtin.command: pveum acl modify {{ inner_item.path }} -token '{{ item.userid }}!{{ item.secret }}' -role {{ inner_item.role }}
+      register: api_acl_task
+      loop_control:
+         loop_var: inner_item
+      loop: "{{ item.acl }}"

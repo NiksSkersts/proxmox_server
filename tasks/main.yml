@@ -1,0 +1,253 @@
+---
+- name: OS configuration
+  vars:
+    create_snippets: "{{ true if snippet_definitions is defined else false }}"
+    # os_update: false
+    # pkgs:
+    #   - python3-netaddr
+    #   - python3-proxmoxer
+    #   - gnupg
+    #   - sshpass
+    #   - rsync
+    #   - ipmitool
+  block:
+
+    - name: OS update
+      when:
+        - os_update | default(false)
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: full
+
+    - name: OS configuration
+      when:
+        - pkgs is defined
+      ansible.builtin.apt:
+        name: "{{ pkgs }}"
+        state: present
+
+    - name: Ensure /var/lib/vz/snippets exists
+      when:
+        - create_snippets
+      ansible.builtin.file:
+        dest: /var/lib/vz/snippets
+        state: directory
+
+- name: User and token setup
+  when: proxmox_users is defined or proxmox_tokens is defined
+  # vars:
+  #   token_save_to_disk: false
+  #   token_save_location: ~/
+  #   EXAMPLE proxmox_users and proxmox_tokens
+  #   proxmox_users:
+  #     - zabbix:
+  #       userid: zabbix@pam
+  #       email: email@email.com
+  #       acl:
+  #         - path: /
+  #           role: PVEAuditor
+  #         - path: /storage
+  #           role: PVEAuditor
+  #         - path: /vms
+  #           role: PVEAuditor
+  #   proxmox_tokens:
+  #     - token0:
+  #       secret: A_SECRET
+  #       userid: zabbix@pam
+  #       acl:
+  #         - path: /
+  #           role: PVEAuditor
+  #         - path: /storage
+  #           role: PVEAuditor
+  #         - path: /vms
+  #           role: PVEAuditor
+  block:
+
+    - name: Import user tasks
+      when:
+        - proxmox_users is defined
+        - proxmox_users | length > 0
+      loop: '{{ proxmox_users }}'
+      ansible.builtin.include_tasks: create_user.yml
+
+    - name: Import token tasks
+      when:
+        - proxmox_tokens is defined
+        - proxmox_tokens | length > 0
+      loop: '{{ proxmox_tokens }}'
+      ansible.builtin.include_tasks: create_token.yml
+
+- name: Configure alerting
+  # vars:
+  #   disable_mail_to_root: false
+  #   disable_default_matcher: false
+  #   remove_previous: false
+  #   alerting_smtp:
+  #     - test:
+  #       name: NAME
+  #       author: "NAME"
+  #       email_from: email@email.com
+  #       server: "192.168.1.1"
+  #       mailto: root@pam
+  #   alerting_matchers:
+  #     - default-matcher:
+  #       name: "backup-failures"
+  #       comment: "Send notifications about backup failures"
+  #       match: "exact:type=vzdump"
+  #       severity: "error"
+  #       mode: all
+  #       target: NAME
+  block:
+
+    - name: Disable mail-to-root
+      when: disable_mail_to_root | default(false)
+      ansible.builtin.command:
+        pvesh set /cluster/notifications/endpoints/sendmail/mail-to-root --disable true
+
+    - name: Disable default-matcher
+      when: disable_default_matcher | default(false)
+      ansible.builtin.command:
+        pvesh set /cluster/notifications/matchers/default-matcher --disable true
+
+    - name: Delete previous backup-failures if they exist
+      loop: "{{ alerting_matchers }}"
+      when:
+        - alerting_matchers is defined
+        - remove_previous | default(false)
+      ansible.builtin.command:
+        pvesh delete /cluster/notifications/matchers/backup-failures
+
+    - name: Delete previous endpoint if they exist
+      ignore_errors: true # Continue if value does not exist.
+      loop: "{{ alerting_smtp }}"
+      when:
+        - remove_previous
+        - alerting_smtp is defined
+      ansible.builtin.command:
+        pvesh delete /cluster/notifications/endpoints/smtp/{{ item.name }}
+
+    # Currently only insecure mode supported.
+    - name: Import SMTP tasks
+      when: alerting_smtp is defined
+      ansible.builtin.include_tasks: configure_smtp.yml
+
+    - name: Import matcher tasks
+      when: alerting_smtp is defined
+      ansible.builtin.include_tasks: configure_smtp.yml
+
+- name: Creating Snippets, LXCs, and VMs
+  when: lxc_definitions is defined or vm_definitions is defined or snippet_definitions is defined
+  vars:
+    # retry_count: 5
+    # search_domain: example.com
+    # vm_archive_name: debian-12-generic-amd64.tar.xz
+    # snippet_definitions:
+    #   - ci-user-1:
+    #     src: aaa/bbb/ci-user-1.j2
+    #     dest: /var/lib/vz/snippets/ci-user-1.yaml
+    #   - ci-vendor:
+    #     src: aaa/bbb/ci-vendor.j2
+    #     dest: /var/lib/vz/snippets/ci-vendor.yaml
+    # lxc_definitions:
+    #  vm_definitions:
+    #    - docker:
+    #      # MAIN VARS
+    #      remove_existing: false
+    #      name: docker
+    #      description: |
+    #        HA Docker VM for services that must be up as much as possible.
+    #      vmid: "1000"
+    #      ip: 192.168.1.2
+    #      template: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.tar.xz"
+    #      template_destination_path: /var/lib/vz/template
+    #      template_checksum: sha512:...
+    #      # CLOUD CONFIG VARS
+    #      ci_update:
+    #      ci_user:
+    #      ci_pass:
+    #      ci_search_domain: "{{ search_domain }}"
+    #      ci_dns:
+    #      ci_ssh:
+    #      ci_custom:
+    #      # VM VARS
+    #      agent: 1
+    #      onboot: true
+    #      bios: 'ovmf'
+    #      cpu_cores: 4
+    #      vm_memory: 2048
+    #      efidisk:
+    #        storage: 'local-zfs'
+    #        format: raw
+    #        efitype: 4m
+    #        pre_enrolled_keys: 1  # Set this to 0 to disable Secure Boot
+    #      cloudinit:
+    #        ide2: "local-zfs:cloudinit,format=raw"
+    #      drives:
+    #        scsi0: "local-zfs:0,import-from=/root/files/disk.raw,format=raw,iothread=1"
+    #      machine: 'q35'
+    #      scsihw: 'virtio-scsi-single'
+    #      tmp:
+    #        storage: 'local-zfs'
+    #      ostype: "l26"
+    #      serial:
+    #        serial0: 'socket'
+    #      vga: "serial0"
+    #      # DISK VARS
+    #      diskn:
+    #        - id: 1
+    #          disk_key: scsi0
+    #          disk_backup: "true"
+    #          replicate: "true"
+    #          disk_discard: "on"
+    #          disk_dest_pool: "data"
+    #          disk_size: 64G
+    #      # NET VARS
+    #      dns: 192.168.100.1
+    #      netn:
+    #        - id: 0
+    #          bridge: "vmbr0"
+    #          ip: "{{ ip }}"
+    #          gw: 192.168.1.1
+    #          subnet: 24
+    #          mtu: 1
+    #          tag: 1
+  block:
+
+    - name: Creating snippets
+      loop: "{{ snippet_definitions }}"
+      when: snippet_definitions is defined
+      retries: "{{ retry_count | default(5) }}"
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+
+    - name: Creating LXCs
+      loop: "{{ lxc_definitions }}"
+      when: lxc_definitions is defined
+      ansible.builtin.include_tasks: "create_lxc.yml"
+
+    - name: Creating VMs
+      loop: "{{ vm_definitions }}"
+      when: vm_definitions is defined
+      ansible.builtin.include_tasks: "create_vm.yml"
+
+- name: Deploy custom scripts
+  when: custom_scripts is defined
+  vars:
+    # EXAMPLE
+    # custom_scripts:
+    #   - 0:
+    #     cmd: 'aaa/bbb/create_template.sh'
+    #   - 1:
+    #     cmd: 'aaa/bbb/clone_template.sh'
+    #   - 2:
+    #     cmd: 'aaa/bbb/create_ssh.sh'
+  block:
+
+    - name: Deploy script
+      loop: "{{ custom_scripts }}"
+      ansible.builtin.script:
+        cmd: "{{ item.cmd }}"
+
+#    - name: Send Email
+#      ansible.builtin.include_tasks: tasks/send_email.yml

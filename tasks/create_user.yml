@@ -1,0 +1,33 @@
+---
+
+- name: user exists {{ item.userid }}?
+  ignore_errors: true
+  community.general.proxmox_user_info:
+    api_user: "{{ proxmox.api_user }}"
+    api_password: "{{ proxmox.api_password }}"
+    api_host: "{{ proxmox.api_host }}"
+    api_token_id: "{{ proxmox.token_id | default(omit) }}"
+    api_token_secret: "{{ proxmox.token_secret | default(omit) }}"
+    userid: "{{ item.userid }}"
+  register: proxmox_user
+
+- name: Create defined users
+  when: proxmox_user.failed
+  block:
+
+    - name: Create {{ item.userid }}
+      ansible.builtin.command: pveum user add {{ item.userid }}
+      register: user_task
+
+    - name: Set email for {{ item.userid }}
+      when: item.email is defined
+      ansible.builtin.command:
+        pvesh set /access/users/{{ item.userid }} --email {{ item.email }}
+
+    - name: Modify ACL {{ item.userid }}
+      ansible.builtin.command: pveum acl modify {{ inner_item.path }} -user {{ item.userid }} -Role {{ inner_item.role }}
+      when: item.acl is defined
+      register: user_acl_task
+      loop_control:
+        loop_var: inner_item
+      loop: "{{ item.acl }}"
