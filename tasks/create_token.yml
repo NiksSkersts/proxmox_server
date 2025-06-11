@@ -17,7 +17,8 @@
       when: token_save_to_disk | default(false)
       ansible.builtin.copy:
         content: "{{ api_task }}"
-        dest: "{{ token_save_location | default('~/') }}/{{ item }}.txt"
+        dest: "{{ token_save_path | default('~/token.txt') }}"
+        remote_src: "{{ !token_save_to_controller }}"
 
     - name: Modify API ACL
       ansible.builtin.command: pveum acl modify {{ inner_item.path }} -token '{{ item.userid }}!{{ item.secret }}' -role {{ inner_item.role }}

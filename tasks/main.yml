@@ -37,7 +37,8 @@
   when: proxmox_users is defined or proxmox_tokens is defined
   # vars:
   #   token_save_to_disk: false
-  #   token_save_location: ~/
+  #   token_save_to_controller: false
+  #   token_save_path: ~/token.txt'
   #   EXAMPLE proxmox_users and proxmox_tokens
   #   proxmox_users:
   #     - zabbix:
@@ -111,6 +112,9 @@
 
     - name: Delete previous backup-failures if they exist
       loop: "{{ alerting_matchers }}"
+      register: task_rem_alerting_matches
+      failed_when: "'404 matcher' not in task_rem_alerting_matches.stderr"
+      ignore_errors: true # Continue if value does not exist.
       when:
         - alerting_matchers is defined
         - remove_previous | default(false)
@@ -129,11 +133,13 @@
     # Currently only insecure mode supported.
     - name: Import SMTP tasks
       when: alerting_smtp is defined
+      loop: "{{ alerting_smtp }}"
       ansible.builtin.include_tasks: configure_smtp.yml
 
     - name: Import matcher tasks
-      when: alerting_smtp is defined
-      ansible.builtin.include_tasks: configure_smtp.yml
+      when: alerting_matchers is defined
+      loop: "{{ alerting_matchers }}"
+      ansible.builtin.include_tasks: configure_matchers.yml
 
 - name: Creating Snippets, LXCs, and VMs
   when: lxc_definitions is defined or vm_definitions is defined or snippet_definitions is defined
