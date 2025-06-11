@@ -20,7 +20,7 @@
   block:
 
     - name: "Download template"
-      when: item.template is url
+      when: "{{ item.template is url }}"
       retries: "{{ retry_count | default(5) }}"
       ansible.builtin.get_url:
         url: "{{ item.template }}"
@@ -28,7 +28,7 @@
         checksum: "{{ item.template_checksum }}"
 
     - name: "Copy template"
-      when: item.template is file
+      when: "{{ item.template is not url }}"
       retries: "{{ retry_count | default(5) }}"
       ansible.builtin.copy:
         src: "{{ item.template }}"
@@ -37,19 +37,14 @@
     - name: Deal with Archives
       when: 'item.template | basename | regex_search("\.(zip|tar|xz|gz|bz2|7z)$")'
       block:
-        
-        - name: "Ensure exists {{ item.template_destination_path }}/{{ template_name }}"
-          ansible.builtin.file:
-            path: "{{ item.template_destination_path }}/{{ template_name }}"
-            state: directory
-        
+
         # Unarchive the downloaded file.
         # Will overwrite any changes to the image in dest.
         # TODO find less expensive way to do this
         - name: "Unarchive the archive."
           ansible.builtin.unarchive:
             src: "{{ item.template_destination_path }}/{{item.template | basename}}"
-            dest: "{{ item.template_destination_path }}/{{ template_name }}"
+            dest: "{{ item.template_destination_path }}/"
             remote_src: true
             mode: '0644'
             owner: root
@@ -57,7 +52,7 @@
 
         - name: "Find the name of the template file"
           ansible.builtin.find:
-            paths: "{{ item.template_destination_path }}/{{ template_name }}/"
+            paths: "{{ item.template_destination_path }}/"
             recurse: true
             file_type: file
             use_regex: false
@@ -67,15 +62,18 @@
           register: found_files
 
         - name: Set cloud_image_path
-          ansible.builtin.set_fact: 
+          when: false
+          ansible.builtin.set_fact:
             cloud_image_path: "{{ found_files.files[0].path }}"
 
     - name: Deal with QCOW2 and RAW files
-      when: 'item.template | basename | regex_search("\.(qcow2|raw)$")'
+      when:
+        - 'item.template | basename | regex_search("\.(qcow2|raw)$")'
+        - false
       block:
 
         - name: Set cloud_image_path
-          ansible.builtin.set_fact: 
+          ansible.builtin.set_fact:
             cloud_image_path: '{{ item.template_destination_path }}/{{ item.template | basename }}'
 
 - name: Stop and remove {{ item.name }}
@@ -116,6 +114,7 @@
         api_password: "{{ proxmox.api_password }}"
         api_host: "{{ proxmox.api_host }}"
         node: "{{ ansible_hostname }}"
+        cpu: "{{ item.cpu | default(omit) }}"
         name: "{{ item.name }}"
         vmid: "{{ item.id }}"
         agent: "{{ item.agent }}"
@@ -125,17 +124,16 @@
         memory: "{{ item.vm_memory }}"
         efidisk0: "{{ item.efidisk | default(omit) }}"
         ide: "{{ item.cloudinit | default(omit) }}"
-        scsi: "{{ item.drives | default(omit) }}" 
         machine: "{{ item.machine }}"
         scsihw: "{{ item.scsihw }}"
-        tpmstate0: "{{ item.tmp }}"
+        tpmstate0: "{{ item.tpmstate0 }}"
         ostype: "{{ item.ostype }}"
         serial: "{{ item.serial }}"
         vga: "{{ item.vga }}"
 
     - name: Assign network interfaces to VM
       community.general.proxmox_nic:
-        state: 'present'
+        state: present
         api_user: "{{ proxmox.api_user }}"
         api_password: "{{ proxmox.api_password }}"
         api_host: "{{ proxmox.api_host }}"
@@ -157,13 +155,14 @@
         node: "{{ ansible_hostname }}"
         name: "{{ item.name }}"
         vmid: "{{ item.id }}"
-        update: '{{ item.ci_update | default(omit) }}'
+        update: true
         ciuser: '{{ item.ci_user | default(omit) }}'
         cipassword: '{{ item.ci_pass | default(omit) }}' # HASH THE PASSWORD BEFOREHAND
         searchdomains: "{{ ci_search_domain | default(omit) }}"
         nameservers: "{{ item.ci_dns | default(omit)}}"
         sshkeys: "{{ item.ci_ssh | default(omit) }}"
         cicustom: "{{ item.ci_custom | default(omit) }}"
+        # '{{ item.ci_update | default(omit) }}'
 
     - name: Add cloud-init ipconfig
       community.general.proxmox_kvm:
@@ -184,10 +183,19 @@
       ansible.builtin.wait_for:
         timeout: 10
 
+    - name: Import boot disk
+      when: item.bootdisk is defined
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        update: true
+        scsi: "{{ item.bootdisk }}"
+
     # Resize disk to "{{ vm_disk_size }}" size. This is not an add function.
     # Required only for boot disks.
-    - name: Ensure disks resized
-      when: inner_item.id == 1
+    - name: Resize boot disk
+      when: inner_item.id == 0
       community.general.proxmox_disk:
         api_user: "{{ proxmox.api_user }}"
         api_password: "{{ proxmox.api_password }}"
@@ -195,11 +203,12 @@
         vmid: "{{ item.id }}"
         disk: "{{ inner_item.disk_key }}"
         size: "{{ inner_item.disk_size | default(vm.def_disk_size) }}"
+        ssd: "{{ inner_item.ssd }}"
         state: 'resized'
         timeout: 10
       loop_control:
         loop_var: inner_item
-      loop: "{{ item.diskn }}"
+      loop: "{{ item.scsin }}"
 
     # Wait for the task to finish.
     # I am not sure if this is even needed.
@@ -219,9 +228,9 @@
     # It will delay this task for 60 seconds and timeout after 180.
     # This task will finish when port 22 becomes active.
     # Delay is required to ensure that port 22 does not become active before cloud-init is ready.
-    - name: Wait for VM to start
-      ansible.builtin.wait_for:
-        host: "{{ item.ip }}"
-        port: 22
-        delay: 30
-        timeout: 180
+    # - name: Wait for VM to start
+    #   ansible.builtin.wait_for:
+    #     host: "{{ item.ip }}"
+    #     port: 22
+    #     delay: 30
+    #     timeout: 180
