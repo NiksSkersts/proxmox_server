@@ -120,9 +120,10 @@
         agent: "{{ item.agent }}"
         onboot: "{{ item.onboot }}"
         bios: "{{ item.bios }}"
+        scsi: "{{ item.bootdisk }}"
         cores: "{{ item.cpu_cores }}"
         memory: "{{ item.vm_memory }}"
-        efidisk0: "{{ item.efidisk | default(omit) }}"
+        efidisk0: "{{ item.efidisk0 | default(omit) }}"
         ide: "{{ item.cloudinit | default(omit) }}"
         machine: "{{ item.machine }}"
         scsihw: "{{ item.scsihw }}"
@@ -183,16 +184,6 @@
       ansible.builtin.wait_for:
         timeout: 10
 
-    - name: Import boot disk
-      when: item.bootdisk is defined
-      community.general.proxmox_kvm:
-        api_user: "{{ proxmox.api_user }}"
-        api_password: "{{ proxmox.api_password }}"
-        api_host: "{{ proxmox.api_host }}"
-        vmid: "{{ item.id }}"
-        update: true
-        scsi: "{{ item.bootdisk }}"
-
     # Resize disk to "{{ vm_disk_size }}" size. This is not an add function.
     # Required only for boot disks.
     - name: Resize boot disk
@@ -224,6 +215,7 @@
         api_password: "{{ proxmox.api_password }}"
         api_host: "{{ proxmox.api_host }}"
         vmid: "{{ item.id }}"
+        node: "{{ ansible_hostname }}"
         state: started
 
     # It will delay this task for 60 seconds and timeout after 180.
