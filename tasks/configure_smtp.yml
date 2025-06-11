@@ -6,4 +6,4 @@
   register: result
   until: result is not failed
   ansible.builtin.command:
-    pvesh create /cluster/notifications/endpoints/smtp --author {{ item.author }} --from-address {{ item.email_from }} --name {{ item.name }} --server {{ item.server }} --mailto-user {{ item.mailto }} --mode insecure --port 25
+    cmd: pvesh create /cluster/notifications/endpoints/smtp --author {{ item.author | quote  }} --from-address {{ item.email_from }} --name {{ item.name | quote }} --server {{ item.server }} --mailto-user {{ item.mailto }} --mode insecure --port 25
