@@ -1,0 +1,26 @@
+---
+
+- name: Procedure to Start VM
+  when: vm_start | default(false)
+  block:
+
+    # Start the virtual machine.
+    - name: "Start"
+      
+      community.general.proxmox_kvm:
+        api_user: "{{ proxmox.api_user }}"
+        api_password: "{{ proxmox.api_password }}"
+        api_host: "{{ proxmox.api_host }}"
+        vmid: "{{ item.id }}"
+        node: "{{ ansible_hostname }}"
+        state: started
+
+    # It will delay this task for 60 seconds and timeout after 180.
+    # This task will finish when port 22 becomes active.
+    # Delay is required to ensure that port 22 does not become active before cloud-init is ready.
+    # - name: Wait for VM to start
+    #   ansible.builtin.wait_for:
+    #     host: "{{ item.ip }}"
+    #     port: 22
+    #     delay: 30
+    #     timeout: 180
